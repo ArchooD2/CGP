@@ -1,6 +1,6 @@
 # CGP: Crossword Game Protocol
 
-Version: 0.1 draft
+Version: 0.2 draft
 
 ## 1. Purpose
 
@@ -11,6 +11,8 @@ The server controls the game flow. The engine receives game state and returns a 
 CGP uses a server/engine architecture. Engines do not communicate with each other directly.
 
 The server is responsible for sending each engine only the public and private information that engine is allowed to know.
+
+The server is authoritative for game state, turn order, racks, bag state, scoring, challenges, game end conditions, and final move legality. Engines propose moves; servers validate and apply or reject them.
 
 ## 2. Transport
 
@@ -39,8 +41,8 @@ Lines should be UTF-8 text.
 Example:
 
 ```text
->cgp
-<cgpok
+> cgp
+< cgpok
 ```
 
 ## 4. Required startup sequence
@@ -48,231 +50,280 @@ Example:
 The server starts by sending:
 
 ```text
->cgp
+> cgp
 ```
 
 The engine must respond with zero or more identification or option lines, followed by:
 
 ```text
-<cgpok
+< cgpok
 ```
 
 Example:
 
 ```text
->cgp
-<name RandomTurtle
-<author Dev
-<version 0.0.1
-<option CGP_Variant standard standard super custom
-<option CGP_Lexicon NWL23 NWL23 CSW24 custom
-<cgpok
+> cgp
+< name RandomTurtle
+< author Dev
+< version 0.0.1
+< option name Variant type combo default standard var standard var super var custom
+< option name Lexicon type combo default NWL23 var NWL23 var CSW24 var custom
+< option name TileSet type combo default english var english
+< cgpok
 ```
 
 Required final response:
 
 ```text
-<cgpok
+< cgpok
 ```
 
 Optional startup responses:
 
 ```text
-<name [engine name]
-<author [author name]
-<version [version string]
-<option [option name] [default value] [allowed value...]
+< name [engine name]
+< author [author name]
+< version [version string]
+< option name [option name] type [type] default [value] [var value...]
 ```
 
-## 5. Readiness
-
-The server may ask whether the engine is ready:
-
-```text
->ready
-```
-
-The engine must respond:
-
-```text
-<readyok
-```
-
-or:
-
-```text
-<readyno [reason]
-```
-
-`ready` should be sent after setup and before asking the engine to move.
-
-## 6. Setup
+## 5. Setup and static resources
 
 The server sends game settings using:
 
 ```text
->setup variant [variant] lexicon [lexicon]
+> setup variant [variant] lexicon [lexicon] tileset [tileset?] lexiconhash [hash?] tilesethash [hash?]
 ```
 
 Example:
 
 ```text
->setup variant standard lexicon NWL23
+> setup variant standard lexicon NWL23 tileset english
+```
+
+Lexicons, tile sets, and rule variants are static resources. They are negotiated by identity during setup and are not resent every move.
+
+Hashes are optional in draft `0.2`, but servers and engines should use them when resource drift would make testing or tournament results ambiguous.
+
+Example with hashes:
+
+```text
+> setup variant standard lexicon NWL23 lexiconhash sha256:abc tileset english tilesethash sha256:def
 ```
 
 The engine responds:
 
 ```text
-<setupok
+< setupok
 ```
 
 or:
 
 ```text
-<setupno [reason]
+< error [reason] [details?]
 ```
 
 Examples:
 
 ```text
-<setupno unknown_lexicon
-<setupno unknown_variant
+< error unsupported_lexicon NWL23
+< error unsupported_variant standard
+< error lexicon_hash_mismatch NWL23 expected sha256:abc got sha256:def
 ```
 
-## 7. Lexicon list
+## 6. Readiness
 
-The server may ask which lexicons the engine supports:
+The server may ask whether the engine is ready:
 
 ```text
->lexicons
+> ready
 ```
 
-The engine responds:
+The engine must respond:
 
 ```text
-<lexicons [lexicon...]
-```
-
-Example:
-
-```text
->lexicons
-<lexicons NWL23 CSW24 enable sowpods
-```
-
-## 8. Variant list
-
-The server may ask which variants the engine supports:
-
-```text
->variants
-```
-
-The engine responds:
-
-```text
-<variants [variant...]
-```
-
-Example:
-
-```text
->variants
-<variants standard super custom
-```
-
-## 9. Lexicon compatibility check
-
-The server may ask an engine for a sample of words from a lexicon:
-
-```text
->lexiconsample [lexicon] [count]
-```
-
-The engine responds with one or more word lines, followed by:
-
-```text
-<endlexiconsample
-```
-
-Example:
-
-```text
->lexiconsample NWL23 5
-<word AA
-<word QI
-<word ZA
-<word CAT
-<word SLATE
-<endlexiconsample
-```
-
-If the engine does not know the lexicon:
-
-```text
-<error unknown_lexicon [lexicon]
-```
-
-The server may ask an engine whether words are legal in a lexicon:
-
-```text
->lexiconcheck [lexicon] [word...]
-```
-
-The engine responds:
-
-```text
-<lexiconcheck ok
+< readyok
 ```
 
 or:
 
 ```text
-<lexiconcheck no [bad word...]
+< error not_ready [reason?]
+```
+
+`ready` should be sent after setup and before asking the engine to move.
+
+## 7. Engine-vs-engine matches
+
+A match runner launches one process per engine.
+
+Each engine receives its own CGP session:
+
+```text
+Engine A stdin/stdout <-> server <-> Engine B stdin/stdout
+```
+
+For each turn, the server sends `position`, then private state for the active engine, then `go` to only the active engine.
+
+The server should choose a variant, lexicon, and tile set supported by every engine in the match. If no compatible setup exists, the server should not start the game.
+
+A server should include enough information in logs to reproduce dictionary-sensitive decisions, especially lexicon names, versions, and hashes when available.
+
+## 8. Lexicon list
+
+The server may ask which lexicons the engine supports:
+
+```text
+> lexicons
+```
+
+The engine responds:
+
+```text
+< lexicons [lexicon...]
 ```
 
 Example:
 
 ```text
->lexiconcheck NWL23 AA QI ZZZZZ
-<lexiconcheck no ZZZZZ
+> lexicons
+< lexicons NWL23 CSW24 enable sowpods
 ```
 
-## 10. Tileset check
+## 9. Variant list
 
-The server may ask for the tile distribution used with a lexicon:
+The server may ask which variants the engine supports:
 
 ```text
->tileset [lexicon]
+> variants
+```
+
+The engine responds:
+
+```text
+< variants [variant...]
+```
+
+Example:
+
+```text
+> variants
+< variants standard super custom
+```
+
+## 10. Tile set list
+
+The server may ask which tile sets the engine supports:
+
+```text
+> tilesets
+```
+
+The engine responds:
+
+```text
+< tilesets [tileset...]
+```
+
+Example:
+
+```text
+> tilesets
+< tilesets english
+```
+
+## 11. Lexicon compatibility check
+
+The server may ask an engine for a sample of words from a lexicon:
+
+```text
+> lexiconsample [lexicon] [count]
+```
+
+The engine responds with one or more word lines, followed by:
+
+```text
+< endlexiconsample
+```
+
+Example:
+
+```text
+> lexiconsample NWL23 5
+< word AA
+< word QI
+< word ZA
+< word CAT
+< word SLATE
+< endlexiconsample
+```
+
+If the engine does not know the lexicon:
+
+```text
+< error unknown_lexicon [lexicon]
+```
+
+The server may ask an engine whether words are legal in a lexicon:
+
+```text
+> lexiconcheck [lexicon] [word...]
+```
+
+The engine responds:
+
+```text
+< lexiconcheck ok
+```
+
+or:
+
+```text
+< lexiconcheck no [bad word...]
+```
+
+Example:
+
+```text
+> lexiconcheck NWL23 AA QI ZZZZZ
+< lexiconcheck no ZZZZZ
+```
+
+## 12. Tile set check
+
+The server may ask for the tile distribution used with a lexicon or tile set:
+
+```text
+> tileset [tileset-or-lexicon]
 ```
 
 The engine responds with tile lines, followed by:
 
 ```text
-<endtileset
+< endtileset
 ```
 
 Format:
 
 ```text
-<tile [letter] [count] [score]
+< tile [letter] [count] [score]
 ```
 
 Example:
 
 ```text
->tileset NWL23
-<tile A 9 1
-<tile B 2 3
-<tile C 2 3
-<tile ? 2 0
-<endtileset
+> tileset english
+< tile A 9 1
+< tile B 2 3
+< tile C 2 3
+< tile ? 2 0
+< endtileset
 ```
 
-The server may ask an engine to verify a tileset:
+The server may ask an engine to verify a tile set:
 
 ```text
->tilesetcheck [lexicon] [tile spec...]
+> tilesetcheck [tileset-or-lexicon] [tile spec...]
 ```
 
 Tile specs use:
@@ -284,23 +335,17 @@ Tile specs use:
 Example:
 
 ```text
->tilesetcheck NWL23 A:9:1 B:2:3 ?:2:0
-<tilesetcheck ok
+> tilesetcheck english A:9:1 B:2:3 ?:2:0
+< tilesetcheck ok
 ```
 
 or:
 
 ```text
-<tilesetcheck no [bad tile...]
+< tilesetcheck no [bad tile...]
 ```
 
-Example:
-
-```text
-<tilesetcheck no Z ?
-```
-
-## 11. Board encoding
+## 13. Board encoding
 
 CGP positions use a compact board encoding inspired by FEN.
 
@@ -312,7 +357,7 @@ Letters represent occupied squares.
 
 Numbers represent runs of empty squares.
 
-For a 15×15 board, the largest possible empty run is `15`.
+For a 15x15 board, the largest possible empty run is `15`.
 
 Each row must expand to exactly 15 squares.
 
@@ -338,35 +383,35 @@ The row `7CAT5` means:
 
 Lowercase letters on the board represent blank tiles.
 
-## 12. Position
+## 14. Position
 
 The server sends the public board position using:
 
 ```text
->position [board]
+> position [board]
 ```
 
 Example:
 
 ```text
->position 15/15/15/15/15/15/15/7CAT5/15/15/15/15/15/15/15
+> position 15/15/15/15/15/15/15/7CAT5/15/15/15/15/15/15/15
 ```
 
 The empty board may be sent as:
 
 ```text
->position 15/15/15/15/15/15/15/15/15/15/15/15/15/15/15
+> position 15/15/15/15/15/15/15/15/15/15/15/15/15/15/15
 ```
 
 A server may also support this shorthand:
 
 ```text
->position startpos
+> position startpos
 ```
 
 `startpos` means the empty board for the current variant.
 
-## 13. Private player state
+## 15. Private player state
 
 The server may send private player state to an engine.
 
@@ -378,42 +423,42 @@ The server is responsible for only sending private state to the engine that is a
 
 Engines do not communicate with each other through CGP.
 
-## 14. Rack
+## 16. Rack
 
 The server may send the engine's current rack using:
 
 ```text
->rack [tiles]
+> rack [tiles]
 ```
 
 Example:
 
 ```text
->rack CTAESR?
+> rack CTAESR?
 ```
 
 The blank tile is represented by `?`.
 
 The engine should treat `rack` as replacing its previous rack state.
 
-## 15. Unseen tiles
+## 17. Unseen tiles
 
 The server may send the tile pool not visible to the engine using:
 
 ```text
->unseen [tile count...]
+> unseen [tile count...]
 ```
 
-Tile counts use:
+Tile counts use compact Tile-FEN notation:
 
 ```text
-[letter]:[count]
+[count][tile][count][tile]...
 ```
 
 Example:
 
 ```text
->unseen 5A2B1C3D8E1?
+> unseen 5A2B1C3D8E1?
 ```
 
 The unseen pool usually includes the bag plus unknown opponent rack tiles.
@@ -422,7 +467,7 @@ The server may omit `unseen` if the variant or server does not support unseen-ti
 
 The engine should treat `unseen` as replacing its previous unseen state.
 
-## 16. Move notation
+## 18. Move notation
 
 Placement moves use basic crossword notation:
 
@@ -470,57 +515,66 @@ H8 SLaTE
 
 means the lowercase `a` is a blank tile assigned as A.
 
-## 17. Asking for a move
+## 19. Asking for a move
 
 The server sends:
 
 ```text
->go
+> go
 ```
 
 or:
 
 ```text
->go movetime [milliseconds]
+> go movetime [milliseconds]
 ```
 
 Example:
 
 ```text
->go movetime 1000
+> go movetime 1000
 ```
 
-The engine responds with exactly one move:
+The engine responds with exactly one `bestmove` line:
 
 ```text
-<bestmove [move]
+< bestmove [move]
 ```
 
 or:
 
 ```text
-<bestmove pass
+< bestmove pass
+```
+
+or:
+
+```text
+< bestmove exchange [tiles]
 ```
 
 Examples:
 
 ```text
-<bestmove H8 SLATE
-<bestmove 8H FLAKIEST
-<bestmove pass
+< bestmove H8 SLATE
+< bestmove 8H FLAKIEST
+< bestmove pass
+< bestmove exchange AE?
 ```
+
+Servers may tolerate direct move lines such as `pass` during draft development, but conforming engines should use the `bestmove` prefix.
 
 A normal turn may look like this:
 
 ```text
->position 15/15/15/15/15/15/15/7CAT5/15/15/15/15/15/15/15
->rack SLATE??
->unseen 5A2B1C3D8E1?
->go movetime 1000
-<bestmove 8H SLATE
+> position 15/15/15/15/15/15/15/7CAT5/15/15/15/15/15/15/15
+> rack SLATE??
+> unseen 5A2B1C3D8E1?
+> go movetime 1000
+< bestmove 8H SLATE
 ```
 
-## 18. Move validity
+## 20. Move validity
 
 The engine should only return legal moves.
 
@@ -528,52 +582,56 @@ The server or match runner may reject illegal moves.
 
 Illegal moves may cause the engine to lose the game, depending on the server or tournament rules.
 
-## 19. Ping
+Lexicon-dependent legality is still adjudicated by the server. Engines may use their local lexicon for search, but the server is the arbiter.
+
+## 21. Ping
 
 The server may test whether the engine is alive:
 
 ```text
->ping
+> ping
 ```
 
 The engine should respond:
 
 ```text
-<pong
+< pong
 ```
 
-## 20. Quit
+## 22. Quit
 
 The server may end the engine process:
 
 ```text
->quit
+> quit
 ```
 
 The engine should exit.
 
 The engine does not need to respond to `quit`.
 
-## 21. Errors
+## 23. Errors
 
 Engines may respond with:
 
 ```text
-<error [code] [details?]
+< error [code] [details?]
 ```
 
 Examples:
 
 ```text
-<error unknown_command banana
-<error unknown_lexicon NWL23
-<error bad_position
-<error not_ready
+< error unknown_command banana
+< error unknown_lexicon NWL23
+< error bad_position
+< error not_ready
 ```
 
 For multiline commands, an `error` response ends the response immediately.
 
-## 22. Required commands
+Unknown commands should not crash an engine. During draft `0.2`, engines should respond with `error unknown_command [command]`.
+
+## 24. Required commands
 
 A minimal CGP engine must support:
 
@@ -587,14 +645,25 @@ go
 quit
 ```
 
+A minimal CGP engine must emit:
+
+```text
+cgpok
+setupok
+readyok
+bestmove
+```
+
 A recommended CGP engine should also support:
 
 ```text
 name
 author
 version
+option
 lexicons
 variants
+tilesets
 lexiconsample
 lexiconcheck
 tileset
@@ -603,30 +672,31 @@ unseen
 ping
 ```
 
-## 23. Minimal legal session
+## 25. Minimal legal session
 
 ```text
->cgp
-<name PassTurtle
-<author Dev
-<version 0.0.1
-<option CGP_Variant standard standard custom
-<option CGP_Lexicon NWL23 NWL23 custom
-<cgpok
->setup variant standard lexicon NWL23
-<setupok
->ready
-<readyok
->position 15/15/15/15/15/15/15/15/15/15/15/15/15/15/15
->rack CTAESR?
->go movetime 1000
-<bestmove pass
->quit
+> cgp
+< name PassTurtle
+< author Dev
+< version 0.0.1
+< option name Variant type combo default standard var standard var custom
+< option name Lexicon type combo default NWL23 var NWL23 var custom
+< option name TileSet type combo default english var english
+< cgpok
+> setup variant standard lexicon NWL23 tileset english
+< setupok
+> ready
+< readyok
+> position 15/15/15/15/15/15/15/15/15/15/15/15/15/15/15
+> rack CTAESR?
+> go movetime 1000
+< bestmove pass
+> quit
 ```
 
-## 24. Draft notes
+## 26. Draft notes
 
-This document describes CGP draft version 0.1.
+This document describes CGP draft version 0.2.
 
 Command names and response formats may change before version 1.0.
 

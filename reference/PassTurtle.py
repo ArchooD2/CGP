@@ -1,21 +1,21 @@
-NAME="PassTurtle"
-AUTHOR="Dev"
+NAME = "PassTurtle"
+AUTHOR = "Dev"
 
 
 while True:
-    commands = input()
-    if "go" in commands:
-        print("pass", flush=True)
-    if "cgp" in commands:
+    command = input().strip()
+    if command.startswith("go"):
+        print("bestmove pass", flush=True)
+    if command == "cgp":
         print(f"name {NAME}", flush=True)
         print(f"author {AUTHOR}", flush=True)
         print("version 1.0", flush=True)
         print("cgpok", flush=True)
-    if "setup" in commands:
+    if command.startswith("setup"):
         print("setupok", flush=True)
-    if "ready" in commands:
+    if command == "ready":
         print("readyok", flush=True)
-    if "rack" in commands or "position" in commands:
+    if command.startswith(("rack", "position", "unseen")):
         continue
-    if "quit" in commands:
+    if command == "quit":
         break

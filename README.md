@@ -1,4 +1,4 @@
-# CGP — Crossword Game Protocol
+# CGP - Crossword Game Protocol
 
 CGP is a line-based protocol for connecting crossword-game engines to GUIs, match runners, and validators.
 
@@ -8,15 +8,25 @@ It borrows the idea of a text-based engine protocol from chess protocols like UC
 
 CGP is currently a draft protocol.
 
-Current draft version: `0.1`
+Current draft version: `0.2`
 
 Expect command names and response formats to change before `1.0`.
+
+## Design model
+
+CGP uses a server-controlled architecture.
+
+The server owns the authoritative game state. It controls turn order, racks, bag state, clocks, scoring, challenges, game end conditions, and final move legality.
+
+Engines propose moves. A server may reject an engine move even if the engine believed it was legal.
+
+This is similar to UCI's practical model: the GUI or match runner keeps the game state and sends enough position state for the engine to search. Unlike chess, crossword games also depend on large static resources such as lexicons and tile sets. CGP does not transmit those resources every move. Instead, server and engine negotiate named resources during setup.
+
+The server sends each engine only the information that engine is allowed to know. Engines do not talk to each other directly.
 
 ## What CGP is
 
 CGP defines how a server talks to a word-game engine through standard input and standard output.
-
-The server controls the game flow.
 
 The engine receives:
 
@@ -28,8 +38,8 @@ The engine receives:
 The engine returns:
 
 - metadata
-- supported variants and lexicons
-- lexicon/tile compatibility info
+- supported variants, lexicons, tile sets, and options
+- readiness and compatibility responses
 - one chosen move
 
 ## What CGP is not
@@ -42,46 +52,72 @@ CGP does not require engines to be written in any specific language.
 
 A CGP engine can be written in Python, C++, C#, Rust, Go, or anything else that can read stdin and write stdout.
 
-## Server / engine model
-
-CGP uses a server-controlled architecture.
-
-The server sends each engine only the information that engine is allowed to know.
-
-Engines do not talk to each other directly.
-
-This means the server may safely send private data, such as the engine's own rack and unseen tile pool, to one engine without revealing that information to the opponent engine.
-
 ## Example
 
 ```text
->cgp
-<name Scuttler
-<author Dev
-<version 0.0.1
-<option CGP_Variant standard standard super custom
-<option CGP_Lexicon NWL23 NWL23 CSW24 enable sowpods custom
-<cgpok
+> cgp
+< name Scuttler
+< author Dev
+< version 0.0.1
+< option name Variant type combo default standard var standard var super var custom
+< option name Lexicon type combo default NWL23 var NWL23 var CSW24 var enable var sowpods var custom
+< option name TileSet type combo default english var english
+< cgpok
 
->setup variant standard lexicon NWL23
-<setupok
+> setup variant standard lexicon NWL23 tileset english
+< setupok
 
->ready
-<readyok
+> ready
+< readyok
 
->position 15/15/15/15/15/15/15/15/15/15/15/15/15/15/15
->rack CTAESR?
->unseen 5A2B1C3D8E2F1G2H6I1J1K3L2M4N5O2P1Q4R3S5T3U2V2W1X2Y1Z1?
->go movetime 1000
-<bestmove H8 SLATE
+> position 15/15/15/15/15/15/15/15/15/15/15/15/15/15/15
+> rack CTAESR?
+> unseen 5A2B1C3D8E2F1G2H6I1J1K3L2M4N5O2P1Q4R3S5T3U2V2W1X2Y1Z1?
+> go movetime 1000
+< bestmove H8 SLATE
 
->quit
+> quit
 ```
 
 In the example above:
 
 - `>` means the server sends a line to the engine.
 - `<` means the engine sends a line to the server.
+
+## Engine-vs-engine matches
+
+A match runner launches one process per engine.
+
+Each engine receives its own CGP session:
+
+```text
+Engine A stdin/stdout <-> server <-> Engine B stdin/stdout
+```
+
+For each turn, the server sends `position`, then private state for the active engine, then `go` to only the active engine.
+
+The server should choose a variant, lexicon, and tile set supported by every engine in the match. If no compatible setup exists, the server should not start the game.
+
+A server should include enough information in logs to reproduce dictionary-sensitive decisions, especially lexicon names, versions, and hashes when available.
+
+## Static resources
+
+Lexicons, tile sets, and rule variants are static resources. They are negotiated by identity during setup and are not resent every move.
+
+Recommended setup fields:
+
+```text
+setup variant standard lexicon NWL23 lexiconhash sha256:... tileset english tilesethash sha256:...
+```
+
+Hashes are optional in draft `0.2`, but servers and engines should use them when resource drift would make testing or tournament results ambiguous.
+
+If an engine cannot support the requested resource, it should respond with `error`:
+
+```text
+< error unsupported_lexicon NWL23
+< error lexicon_hash_mismatch NWL23 expected sha256:abc got sha256:def
+```
 
 ## Board encoding
 
@@ -95,7 +131,7 @@ Letters represent occupied squares.
 
 Numbers represent runs of empty squares.
 
-For a 15×15 board, the largest possible empty run is `15`.
+For a 15x15 board, the largest possible empty run is `15`.
 
 Example empty board:
 
@@ -124,11 +160,11 @@ The server may send private player data before `go`.
 Example:
 
 ```text
->position 15/15/15/15/15/15/15/7CAT5/15/15/15/15/15/15/15
->rack SLATE??
->unseen 5A2B1C3D8E1?
->go movetime 1000
-<bestmove 8H SLATE
+> position 15/15/15/15/15/15/15/7CAT5/15/15/15/15/15/15/15
+> rack SLATE??
+> unseen 5A2B1C3D8E1?
+> go movetime 1000
+< bestmove 8H SLATE
 ```
 
 `rack` gives the engine's current rack.
@@ -185,14 +221,31 @@ H8 SLaTE
 
 means the lowercase `a` is a blank assigned as A.
 
+## Move responses
+
+A conforming engine responds to `go` with exactly one `bestmove` line.
+
+```text
+< bestmove H8 SLATE
+< bestmove 8H SLATE
+< bestmove pass
+< bestmove exchange AE?
+```
+
+Servers may tolerate direct move lines such as `pass` during draft development, but conforming engines should use the `bestmove` prefix.
+
+`pass` means the engine chooses to pass.
+
+`exchange AE?` means the engine requests an exchange of those rack tiles. The server remains responsible for deciding whether exchange is legal.
+
 ## Basic engine flow
 
 A normal CGP session looks like this:
 
 1. Server sends `cgp`.
-2. Engine responds with metadata and `cgpok`.
-3. Server sends `setup`.
-4. Engine responds with `setupok`.
+2. Engine responds with metadata, options, and `cgpok`.
+3. Server sends `setup` with variant, lexicon, tile set, and optional hashes.
+4. Engine responds with `setupok` or `error`.
 5. Server sends `ready`.
 6. Engine responds with `readyok`.
 7. Server sends `position`.
@@ -215,57 +268,62 @@ go
 quit
 ```
 
+A minimal CGP engine must emit:
+
+```text
+cgpok
+setupok
+readyok
+bestmove
+```
+
 Recommended commands:
 
 ```text
 name
 author
 version
+option
 lexicons
 variants
-lexiconsample
+tilesets
 lexiconcheck
-tileset
 tilesetcheck
 unseen
 ping
 ```
 
-## Lexicons and variants
+## Options and compatibility
 
-Engines may report supported lexicons:
-
-```text
->lexicons
-<lexicons NWL23 CSW24 enable sowpods custom
-```
-
-Engines may report supported variants:
+Engines may report supported options during the `cgp` response.
 
 ```text
->variants
-<variants standard super custom
+< option name Lexicon type combo default NWL23 var NWL23 var CSW24 var enable var sowpods var custom
+< option name Variant type combo default standard var standard var super var custom
+< option name TileSet type combo default english var english
 ```
 
-A server should choose a lexicon and variant supported by the engine before starting a match.
+A server should choose a lexicon, tile set, and variant supported by the engine before starting a match.
 
-In engine-vs-engine matches, the server should choose a lexicon and variant supported by both engines.
+In engine-vs-engine matches, the server should choose resources supported by both engines.
 
 ## Error handling
 
 Engines may respond with:
 
 ```text
-<error [code] [details?]
+< error [code] [details?]
 ```
 
 Example:
 
 ```text
-<error unknown_lexicon FAKELEX
+< error unknown_lexicon FAKELEX
 ```
 
 For multiline responses, an `error` line ends the response immediately.
+
+Unknown commands should not crash an engine. During draft `0.2`, engines should respond with `error unknown_command [command]`.
 
 ## Current goals
 
@@ -277,10 +335,11 @@ The first goals for CGP are:
 - allow bots written in different languages to play through the same interface
 - make lexicon and tileset compatibility checkable
 - allow servers to send private player state safely to individual engines
+- keep static dictionary and tile resources negotiated once rather than transmitted every move
 
 ## Related project ideas
 
-`Scuteboard` is a planned GUI / tournament runner that speaks CGP.
+`Scuteboard` is a GUI / tournament runner that speaks CGP.
 
 A CGP engine should be launchable by Scuteboard as a separate process.
 

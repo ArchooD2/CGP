@@ -209,6 +209,8 @@ The protocol should not require engines to reveal an entire word list.
 
 Sampling and checking are for compatibility, not proof of full lexicon equality.
 
+Static resources such as lexicons, tile sets, and rule variants should be negotiated by identity during setup. Do not require a server to transmit a full dictionary every move.
+
 ## Compatibility expectations
 
 A CGP engine should be able to:
@@ -216,13 +218,13 @@ A CGP engine should be able to:
 1. receive `cgp`
 2. respond with metadata and `cgpok`
 3. receive `setup`
-4. respond with `setupok` or `setupno`
+4. respond with `setupok` or `error`
 5. receive `ready`
-6. respond with `readyok` or `readyno`
+6. respond with `readyok` or `error`
 7. receive `position`
 8. receive private state such as `rack` and `unseen`
 9. receive `go`
-10. respond with exactly one `bestmove`
+10. respond with exactly one `bestmove` line
 11. receive `quit`
 12. exit cleanly
 
@@ -230,9 +232,9 @@ Reference validators should test these basics first.
 
 ## Adding examples
 
-Examples should show one server talking to one engine.
+Examples may show one server talking to one engine, or one server managing multiple independent engine sessions.
 
-Do not show two engines talking directly to each other.
+Do not show two engines talking directly to each other. In engine-vs-engine examples, each engine has its own stdin/stdout session with the server.
 
 Use:
 
@@ -286,7 +288,7 @@ Implementation advice belongs in README files, examples, or reference-code comme
 
 ## Versioning
 
-CGP is currently draft `0.1`.
+CGP is currently draft `0.2`.
 
 Before `1.0`, breaking changes are allowed with reasoning explaining them.
 
