@@ -339,7 +339,7 @@ The first goals for CGP are:
 
 ## Related project ideas
 
-`Scuteboard` is a GUI / tournament runner that speaks CGP.
+[Scuteboard](github.com/ArchooD2/Scuteboard) is a GUI / tournament runner that speaks CGP.
 
 A CGP engine should be launchable by Scuteboard as a separate process.
 
